@@ -2,19 +2,16 @@ import streamlit as st
 from PyPDF2 import PdfReader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import os
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-import google.generativeai as genai
-
+from groq import Groq
 from langchain.vectorstores import FAISS
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.chains.question_answering import load_qa_chain
-from langchain.prompts import PromptTemplate
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
+# GROQ client setup
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 def get_pdf_text(pdf_docs):
     text = ""
@@ -36,23 +33,28 @@ def get_vector_store(text_chunks):
     vector_store.save_local("faiss_index")
 
 
-def get_conversational_chain():
-    prompt_template = """
-    Answer the question as detailed as possible from the provided context, make sure to provide all the details. 
-    If the answer is not in the provided context, just say, "answer is not available in the context", 
-    don't provide the wrong answer.
+def query_groq_llm(context, question):
+    prompt = f"""
+Answer the question as detailed as possible from the provided context. 
+If the answer is not in the provided context, just say, "answer is not available in the context".
 
-    Context:
-    {context}
+Context:
+{context}
 
-    Question:
-    {question}
+Question:
+{question}
 
-    Answer:
-    """
-    model = ChatGoogleGenerativeAI(model="gemini-1.5-pro-latest", temperature=0.3)
-    prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
-    return load_qa_chain(model, chain_type="stuff", prompt=prompt)
+Answer:"""
+
+    response = client.chat.completions.create(
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+        max_tokens=1024,
+        top_p=1
+    )
+
+    return response.choices[0].message.content.strip()
 
 
 def user_input(user_question):
@@ -60,9 +62,10 @@ def user_input(user_question):
     db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
     docs = db.similarity_search(user_question)
 
-    chain = get_conversational_chain()
-    resp = chain({"input_documents": docs, "question": user_question}, return_only_outputs=True)
-    st.write("**Response:**", resp["output_text"])
+    context = "\n\n".join([doc.page_content for doc in docs])
+    answer = query_groq_llm(context, user_question)
+
+    st.write("**Response:**", answer)
 
 
 def clear_question():
